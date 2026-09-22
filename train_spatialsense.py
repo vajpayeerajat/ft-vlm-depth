@@ -13,12 +13,12 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-
+import matplotlib.cm as cm
 # Paths
 ANNOTATIONS_FILE = "data/annotations.json"
 IMAGE_DIR = "data/images/flickr/"
 DEPTH_DIR = "data/depths/raw_npy/"
-OUTPUT_DIR = "qwen2/qwen2_vl_spatialsense_lora"
+OUTPUT_DIR = "qwen2/qwen2_vl_with_depth_spatialsense_lora"
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -39,10 +39,15 @@ class SpatialSenseDataset(Dataset):
       img_filename = entry.get("filename") or entry.get("url", "").split(
           "/"
       )[-1]
+      
+      ## depth files are the saved precomputed path with the original file name. 
+      ## This is to save time in training and avoid computing depth on the fly.
       depth_filename = img_filename.replace(".jpg", ".npy").replace(".png", ".npy")
       depth_path = os.path.join(DEPTH_DIR, depth_filename)
+
       # Load pre-cached depth information 
       depth_data = np.load(depth_path, allow_pickle=True)
+      
       if "nyu" in img_filename.lower():
         img_path = os.path.join("data/images/nyu/", img_filename)
       else:
@@ -63,32 +68,40 @@ class SpatialSenseDataset(Dataset):
             "depth": depth_data,
         })
     print(f"Loaded {len(self.samples)} valid samples for split: '{split}'")
+  
   def __len__(self):
     return len(self.samples)
+
   def __getitem__(self, idx):
     item = self.samples[idx]
     image = Image.open(item["image_path"]).convert("RGB")
+    depth_array = item["depth"]
+    # normalized depth 
+    depth_norm = (depth_array - depth_array.min()) / (depth_array.max() - depth_array.min() + 1e-8)
+    depth_colormap = (cm.viridis(depth_norm)[:, :, :3] * 255).astype(np.uint8)
+    depth_image = Image.fromarray(depth_colormap)
+
     prompt = (
-        "Examine the spatial arrangement of the image.\n"
-        f"Question: Is the {item['subject']} {item['predicate']} the"
-        f" {item['object']}?\n"
+        "Image 1 shows the visual scene. Image 2 shows the corresponding depth map.\n"
+        f"Question: Is the {item['subject']} {item['predicate']} the {item['object']}?\n"
         "Answer with strictly 'Yes' or 'No'."
     )
+    
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image"},
+                {"type": "image"},  # Second image slot for depth
                 {"type": "text", "text": prompt},
             ],
         },
-        {
-            "role": "assistant",
-            "content": item["answer"],
-        },
+        {"role": "assistant", "content": item["answer"]},
     ]
+    
     return {
         "image": image,
+        "depth_image": depth_image,
         "messages": messages,
         "answer": item["answer"],
     }
@@ -148,35 +161,34 @@ model.print_trainable_parameters()
 # 4. Collate Function (Robust Target Masking)
 # -------------------------------------------------------------
 def collate_fn(batch):
-  images = [item["image"] for item in batch]
-  texts = [
-      processor.apply_chat_template(item["messages"], tokenize=False)
-      for item in batch
-  ]
-
-  batch_inputs = processor(
-      text=texts,
-      images=images,
-      padding=True,
-      return_tensors="pt",
-  )
-
-  labels = torch.full_like(batch_inputs["input_ids"], -100)
-
-  for i, item in enumerate(batch):
-    ans_ids = processor.tokenizer(item["answer"], add_special_tokens=False)[
-        "input_ids"
+    # Pass a list of image lists per sample
+    images = [[item["image"], item["depth_image"]] for item in batch]
+    texts = [
+        processor.apply_chat_template(item["messages"], tokenize=False)
+        for item in batch
     ]
-    seq = batch_inputs["input_ids"][i].tolist()
-    k = len(ans_ids)
 
-    for idx in range(len(seq) - k, -1, -1):
-      if seq[idx : idx + k] == ans_ids:
-        labels[i, idx : idx + k] = torch.tensor(ans_ids)
-        break
+    batch_inputs = processor(
+        text=texts,
+        images=images,  # Accepts list of lists for multi-image input
+        padding=True,
+        return_tensors="pt",
+    )
 
-  batch_inputs["labels"] = labels
-  return batch_inputs
+    labels = torch.full_like(batch_inputs["input_ids"], -100)
+
+    for i, item in enumerate(batch):
+        ans_ids = processor.tokenizer(item["answer"], add_special_tokens=False)["input_ids"]
+        seq = batch_inputs["input_ids"][i].tolist()
+        k = len(ans_ids)
+
+        for idx in range(len(seq) - k, -1, -1):
+            if seq[idx : idx + k] == ans_ids:
+                labels[i, idx : idx + k] = torch.tensor(ans_ids)
+                break
+
+    batch_inputs["labels"] = labels
+    return batch_inputs
 
 # -------------------------------------------------------------
 # 5. Training Arguments and Execution
@@ -193,7 +205,7 @@ training_args = TrainingArguments(
     save_strategy="epoch",  # Save checkpoint at the end of each epoch
     save_total_limit=2,
     load_best_model_at_end=True,  # Retains checkpoint with best eval loss
-    metric_for_best_model="eval_loss",
+    metric_for_best_model="epoch",
     bf16=torch.cuda.is_bf16_supported(),
     fp16=not torch.cuda.is_bf16_supported(),
     dataloader_pin_memory=False,
