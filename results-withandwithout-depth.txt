@@ -1,0 +1,25 @@
+==================================================
+OVERALL EVALUATION RESULTS (Test Split) - without depth 
+==================================================
+Total Samples Tested: 3622
+Accuracy:  76.15%
+Precision: 76.32%
+Recall:    76.15%
+Macro F1:  76.11%
+
+--- ACCURACY BY PREDICATE ---
+                 Samples  Accuracy
+predicate                         
+on                  1100     80.91
+behind               508     77.17
+in front of          450     72.67
+in                   338     78.99
+next to              324     71.91
+under                290     76.90
+above                288     69.44
+to the left of       178     70.22
+to the right of      146     69.18
+
+--------------------------------------------------
+Depth-Critical Accuracy ('behind' / 'in front of'): 75.05%
+--------------------------------------------------
