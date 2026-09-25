@@ -1,3 +1,5 @@
+
+## WITHOUT DEPTH INTEGARTION
 ==================================================
 OVERALL EVALUATION RESULTS (Test Split) - without depth 
 ==================================================
@@ -23,3 +25,14 @@ to the right of      146     69.18
 --------------------------------------------------
 Depth-Critical Accuracy ('behind' / 'in front of'): 75.05%
 --------------------------------------------------
+
+Notes : 
+This has been trained using NVIDIA RTX PRO 6000 Black. Using the same configuration it took around 27GBs
+
+
+## DEPTH INTEGRATION 
+
+### NORMALIZED DEPTH GIVEN AS IMAGE IN PROMPT 
+
+
+### 
